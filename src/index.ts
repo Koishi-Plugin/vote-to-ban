@@ -24,7 +24,7 @@ export interface Config {
 export const Config: Schema<Config> = Schema.object({
   voteGroup: Schema.string().description('投票表决群'),
   allowList: Schema.array(String).description('白名单用户'),
-  threshold: Schema.string().description('表决阈值').default('5:2').pattern(/^\d+:\d+$/),
+  threshold: Schema.string().description('表决阈值').default('3:1').pattern(/^\d+:\d+$/),
   timeout: Schema.number().description('超时时间').min(0),
 })
 
@@ -119,7 +119,9 @@ export function apply(ctx: Context, config: Config) {
       vote.reject.add(userId)
     }
     const [appLimit, rejLimit] = config.threshold.split(':').map(Number)
-    session.send(h.quote(quote.id) + `投票进度：${vote.approve.size}/${appLimit} 支持，${vote.reject.size}/${rejLimit} 反对`).catch(logger.error)
+    session.send(h.quote(quote.id) + `投票进度：${vote.approve.size}/${appLimit} 支持，${vote.reject.size}/${rejLimit} 反对`).then((res) => {
+      ctx.setTimeout(() => { res.forEach(id => { if (id && session.guildId) session.bot.deleteMessage(session.guildId, id).catch(() => { }) }) }, 60000)
+    }).catch(logger.error)
     if (vote.approve.size >= appLimit) return finishVote(voteKey, vote, 'approve', session, h.quote(quote.id).toString())
     if (vote.reject.size >= rejLimit) return finishVote(voteKey, vote, 'reject', session, h.quote(quote.id).toString())
   })

@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-vote-to-ban",
   "description": "自助群管系统，投票禁言或踢出",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "contributors": [
     "Yis_Rime <yis_rime@outlook.com>"
   ],
