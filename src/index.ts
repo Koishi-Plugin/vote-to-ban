@@ -77,8 +77,7 @@ export function apply(ctx: Context, config: Config) {
     const guildName = (await session.bot.getGuild(guildId).catch(() => ({} as any)))?.name
     const [appLimit, rejLimit] = config.threshold.split(':').map(Number)
     const targetGroup = config.voteGroup || guildId
-    const ruleDesc = `${appLimit}/${rejLimit} (${config.timeout > 0 ? `${config.timeout}分钟` : '-1分钟'})`
-    const messageText = `${guildName} (${guildId})\n${targetName} (${targetId})\n说明: ${duration > 0 ? `禁言${duration}分钟` : '踢出'} / ${ruleDesc}\n引用并回复: y/同意/n/拒绝`
+    const messageText = `${guildName} (${guildId})\n${targetName} (${targetId})\n${config.timeout > 0 ? `${config.timeout}分钟` : '无限时'}→${duration > 0 ? `禁言${duration}分钟` : '踢出'}\n引用回复: y/同意(${appLimit}) | n/拒绝(${rejLimit})`
     const vote: Vote = { session, targetId, targetName, messageId: '', duration, approve: new Set(), reject: new Set() }
     if (config.voteGroup && config.voteGroup !== guildId) await session.bot.internal.sendGroupForwardMsg(Number(targetGroup), [{ type: 'node', data: { name: targetName, uin: targetId, content: quote.content } }]).catch(() => {})
     const result = await session.bot.sendMessage(targetGroup, messageText).catch(logger.error)
@@ -119,7 +118,7 @@ export function apply(ctx: Context, config: Config) {
       vote.reject.add(userId)
     }
     const [appLimit, rejLimit] = config.threshold.split(':').map(Number)
-    session.send(h.quote(quote.id) + `投票进度：${vote.approve.size}/${appLimit} 支持，${vote.reject.size}/${rejLimit} 反对`).then((res) => {
+    session.send(h.quote(quote.id) + `支持：${vote.approve.size}/${appLimit} | 反对：${vote.reject.size}/${rejLimit}`).then((res) => {
       ctx.setTimeout(() => { res.forEach(id => { if (id && session.guildId) session.bot.deleteMessage(session.guildId, id).catch(() => { }) }) }, 60000)
     }).catch(logger.error)
     if (vote.approve.size >= appLimit) return finishVote(voteKey, vote, 'approve', session, h.quote(quote.id).toString())
