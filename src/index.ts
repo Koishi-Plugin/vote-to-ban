@@ -57,25 +57,55 @@ export function apply(ctx: Context, config: Config) {
     action.then(() => sendMsg(`投票通过，已${duration > 0 ? `禁言${duration}分钟` : '踢出'} ${targetName}`)).catch(logger.error)
   }
 
-  ctx.command('vote [duration:number]').action(async ({ session }, duration) => {
+  ctx.command('vote [duration:number]')
+    .action(async ({ session }, duration) => {
+    logger.info(`投票发起: ${session?.guildId}-${session?.userId}`)
     if (!session?.guildId || !session.userId) return
-    if (config.allowList && config.allowList.length > 0) if (!config.allowList.includes(session.userId)) return
-    if (config.voteGroup) try { await session.bot.getGuildMember(config.voteGroup, session.userId) } catch (e) { return; }
+    if (config.allowList && config.allowList.length > 0) {
+      if (!config.allowList.includes(session.userId)) {
+        logger.info(`权限拦截: 用户 ${session.userId} 非白名单`)
+        return
+      }
+    }
+    if (config.voteGroup) {
+      try {
+        await session.bot.getGuildMember(config.voteGroup, session.userId)
+      } catch (e) {
+        logger.info(`权限拦截: 用户 ${session.userId} 非指定群 ${config.voteGroup} 中`)
+        return;
+      }
+    }
     const quote = session.quote
-    if (!quote || !quote.user || !quote.user.id) return
+    if (!quote || !quote.user || !quote.user.id) {
+      logger.info(`指令忽略: 用户 ${session.userId} 未引用消息`)
+      return
+    }
     const guildId = session.guildId
-    duration = (!duration || isNaN(duration)) ? 0 : duration
+    duration = (duration === undefined || duration === null || isNaN(duration)) ? 60 : duration
     const targetId = quote.user.id
-    if (targetId === session.selfId) return
+    if (targetId === session.selfId) {
+      logger.info(`操作拦截: 目标用户 ${targetId} 为自身`)
+      return
+    }
     const voteKey = `${guildId}-${targetId}`
-    if (voteMap.has(voteKey)) return
+    if (voteMap.has(voteKey)) {
+      logger.info(`操作拦截: 目标用户 ${targetId} 进行中`)
+      return
+    }
     let targetName = quote.user.name || targetId
     try {
       const [botMember, targetMember] = await Promise.all([session.bot.getGuildMember(guildId, session.selfId), session.bot.getGuildMember(guildId, targetId)])
       targetName = targetMember.nick || targetMember.user?.name || targetName
-      if ((botMember as any).role === 'member') return
-      if ((targetMember as any).role !== 'member') return
+      if ((botMember as any).role === 'member') {
+        logger.info(`发起失败: 机器人在群 ${guildId} 中为成员`)
+        return
+      }
+      if ((targetMember as any).role !== 'member') {
+        logger.info(`发起失败: 目标用户 ${targetId} 为群管理`)
+        return
+      }
     } catch (e) {
+      logger.error(`获取信息失败: ${e}`)
       return
     }
     const [appLimit, rejLimit] = config.threshold.split(':').map(Number)
@@ -95,12 +125,14 @@ export function apply(ctx: Context, config: Config) {
     vote.messageId = msgId
     if (config.timeout > 0) {
       vote.timer = setTimeout(() => {
+        logger.info(`投票超时: ${voteKey}`)
         if (vote.approve.size >= appLimit) finishVote(voteKey, vote, 'approve')
         else if (vote.reject.size >= rejLimit) finishVote(voteKey, vote, 'reject')
         else finishVote(voteKey, vote, 'timeout')
       }, config.timeout * 60000)
     }
     voteMap.set(voteKey, vote)
+    logger.info(`投票发起: 目标 ${targetName}(${targetId}), 限时 ${duration} 分钟`)
   })
 
   ctx.middleware((session, next) => {
@@ -119,10 +151,12 @@ export function apply(ctx: Context, config: Config) {
       if (vote.approve.has(userId)) return
       vote.reject.delete(userId)
       vote.approve.add(userId)
+      logger.info(`投票更新: 用户 ${userId} 赞成, 当前: ${vote.approve.size}/${vote.reject.size}`)
     } else {
       if (vote.reject.has(userId)) return
       vote.approve.delete(userId)
       vote.reject.add(userId)
+      logger.info(`投票更新: 用户 ${userId} 反对, 当前: ${vote.approve.size}/${vote.reject.size}`)
     }
     const [appLimit, rejLimit] = config.threshold.split(':').map(Number)
     if (vote.approve.size >= appLimit) return finishVote(voteKey, vote, 'approve', session, h.quote(quote.id).toString())
