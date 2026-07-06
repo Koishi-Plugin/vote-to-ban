@@ -58,66 +58,43 @@ export function apply(ctx: Context, config: Config) {
   }
 
   ctx.command('vote')
-    .option('time', '-t <time:number>', { fallback: 0 })
+    .option('time', '-t <time:number>', { fallback: 60 })
     .option('ban', '-b', { fallback: false })
     .action(async ({ session, options }) => {
     if (!session?.guildId || !session.userId) return
     const { userId, guildId, selfId } = session
-    const { time = 0, ban = false } = options || {}
-    if (time > 0 && ban) return
+    const { time = 60, ban = false } = options || {}
     const quote = session.quote
-    if (!quote?.user?.id) {
-      logger.info(`指令忽略: 用户 ${userId} 未引用消息`)
-      return
-    }
-    if (config.allowList?.length > 0 && !config.allowList.includes(userId)) {
-      logger.info(`权限拦截: 用户 ${userId} 不在白名单`)
-      return
-    }
-    if (config.voteGroup) {
-      try {
-        await session.bot.getGuildMember(config.voteGroup, userId)
-      } catch (e) {
-        logger.info(`权限拦截: 用户 ${userId} 不在群 ${config.voteGroup} 中`)
-        return
-      }
-    }
+    if (!quote?.user?.id) return
+    if (config.allowList?.length > 0 && !config.allowList.includes(userId)) return
+    if (config.voteGroup) try { await session.bot.getGuildMember(config.voteGroup, userId) } catch (e) { return; }
     const targetId = quote.user.id
     if (targetId === selfId) return
     const voteKey = `${guildId}-${targetId}`
     if (voteMap.has(voteKey)) return
-    let targetName = quote.user.name || targetId
-    try {
-      const targetMember = await session.bot.getGuildMember(guildId, targetId)
-      targetName = targetMember.nick || targetMember.user?.name || targetName
-    } catch (e) {
-      logger.error(`获取信息失败: ${e}`)
-    }
+    const duration: number = ban ? 0 : (time > 0 ? time : 60)
+    const targetName = (await session.bot.getGuildMember(guildId, targetId).catch(() => ({} as any)))?.nick || quote.user.name || targetId
+    const guildName = (await session.bot.getGuild(guildId).catch(() => ({} as any)))?.name
     const [appLimit, rejLimit] = config.threshold.split(':').map(Number)
     const targetGroup = config.voteGroup || guildId
-    const messageText = `用户: ${targetName}\n操作: ${time > 0 ? `禁言${time}分钟` : '踢出'}\n规则: ${appLimit}人同意 / ${rejLimit}人反对 (${config.timeout > 0 ? `限时${config.timeout}分钟` : '不限时'})\n请引用回复本消息: [+1/y/支持/同意] 或 [-1/n/反对/拒绝]`
-    const vote: Vote = { session, targetId, targetName, messageId: '', duration: time > 0 ? time : 0, approve: new Set(), reject: new Set() }
-    if (config.voteGroup && config.voteGroup !== guildId) {
-      if (session.bot.internal?.sendGroupForwardMsg) {
-        await session.bot.internal.sendGroupForwardMsg(Number(targetGroup), [{ type: 'node', data: { name: targetName, uin: targetId, content: quote.content } }]).catch(() => {})
-      } else {
-        await session.bot.sendMessage(targetGroup, `[转发] ${targetName}:\n${quote.content}`).catch(() => {})
-      }
-    }
+    const ruleDesc = `${appLimit}/${rejLimit} (${config.timeout > 0 ? `${config.timeout}分钟` : '-1分钟'})`
+    const messageText = `${guildName} (${guildId})\n${targetName} (${targetId})\n说明: ${duration > 0 ? `禁言${duration}分钟` : '踢出'} / ${ruleDesc}\n引用并回复: y/同意/n/拒绝`
+    const vote: Vote = { session, targetId, targetName, messageId: '', duration, approve: new Set(), reject: new Set() }
+    if (config.voteGroup && config.voteGroup !== guildId) await session.bot.internal.sendGroupForwardMsg(Number(targetGroup), [{ type: 'node', data: { name: targetName, uin: targetId, content: quote.content } }]).catch(() => {})
     const result = await session.bot.sendMessage(targetGroup, messageText).catch(logger.error)
     const msgId = (Array.isArray(result) ? result[0] : result) || ''
     if (!msgId) return
     vote.messageId = msgId
     if (config.timeout > 0) {
       vote.timer = setTimeout(() => {
-        logger.info(`投票超时: ${voteKey}`)
-        if (vote.approve.size >= appLimit) finishVote(voteKey, vote, 'approve')
-        else if (vote.reject.size >= rejLimit) finishVote(voteKey, vote, 'reject')
-        else finishVote(voteKey, vote, 'timeout')
+        const currentVote = voteMap.get(voteKey)
+        if (!currentVote) return
+        if (currentVote.approve.size >= appLimit) finishVote(voteKey, currentVote, 'approve')
+        else if (currentVote.reject.size >= rejLimit) finishVote(voteKey, currentVote, 'reject')
+        else finishVote(voteKey, currentVote, 'timeout')
       }, config.timeout * 60000)
     }
     voteMap.set(voteKey, vote)
-    logger.info(`投票发起: 目标 ${targetName}(${targetId})，操作: ${time > 0 ? `禁言${time}分钟` : '踢出'}`)
   })
 
   ctx.middleware((session, next) => {
@@ -129,21 +106,20 @@ export function apply(ctx: Context, config: Config) {
     if (!voteEntry) return next()
     const [voteKey, vote] = voteEntry
     const msgText = content?.trim().toLowerCase() || ''
-    const isApprove = ['+1', 'y', 'yes', '支持', '同意'].includes(msgText)
-    const isReject = ['-1', 'n', 'no', '反对', '拒绝'].includes(msgText)
+    const isApprove = ['y', 'yes', '同意'].includes(msgText)
+    const isReject = ['n', 'no', '拒绝'].includes(msgText)
     if (!isApprove && !isReject) return next()
     if (isApprove) {
       if (vote.approve.has(userId)) return
       vote.reject.delete(userId)
       vote.approve.add(userId)
-      logger.info(`投票更新: 用户 ${userId} 赞成, 当前: ${vote.approve.size}/${vote.reject.size}`)
     } else {
       if (vote.reject.has(userId)) return
       vote.approve.delete(userId)
       vote.reject.add(userId)
-      logger.info(`投票更新: 用户 ${userId} 反对, 当前: ${vote.approve.size}/${vote.reject.size}`)
     }
     const [appLimit, rejLimit] = config.threshold.split(':').map(Number)
+    session.send(h.quote(quote.id) + `投票进度：${vote.approve.size}/${appLimit} 支持，${vote.reject.size}/${rejLimit} 反对`).catch(logger.error)
     if (vote.approve.size >= appLimit) return finishVote(voteKey, vote, 'approve', session, h.quote(quote.id).toString())
     if (vote.reject.size >= rejLimit) return finishVote(voteKey, vote, 'reject', session, h.quote(quote.id).toString())
   })
