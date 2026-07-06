@@ -58,16 +58,26 @@ export function apply(ctx: Context, config: Config) {
   }
 
   ctx.command('vote [duration:number]').action(async ({ session }, duration) => {
-    if (!session?.guildId) return
+    if (!session?.guildId || !session.userId) return
+    if (config.allowList && config.allowList.length > 0) if (!config.allowList.includes(session.userId)) return
+    if (config.voteGroup) try { await session.bot.getGuildMember(config.voteGroup, session.userId) } catch (e) { return; }
     const quote = session.quote
     if (!quote || !quote.user || !quote.user.id) return
     const guildId = session.guildId
     duration = (!duration || isNaN(duration)) ? 0 : duration
     const targetId = quote.user.id
+    if (targetId === session.selfId) return
     const voteKey = `${guildId}-${targetId}`
     if (voteMap.has(voteKey)) return
     let targetName = quote.user.name || targetId
-    await session.bot.getGuildMember(guildId, targetId).then(member => targetName = member.nick || member.user?.name || targetName).catch(() => {})
+    try {
+      const [botMember, targetMember] = await Promise.all([session.bot.getGuildMember(guildId, session.selfId), session.bot.getGuildMember(guildId, targetId)])
+      targetName = targetMember.nick || targetMember.user?.name || targetName
+      if ((botMember as any).role === 'member') return
+      if ((targetMember as any).role !== 'member') return
+    } catch (e) {
+      return
+    }
     const [appLimit, rejLimit] = config.threshold.split(':').map(Number)
     const targetGroup = config.voteGroup || guildId
     const messageText = `用户: ${targetName}\n操作: ${duration > 0 ? `禁言${duration}分钟` : '踢出'}\n规则: ${appLimit}人同意 / ${rejLimit}人反对 (${config.timeout > 0 ? `限时${config.timeout}分钟` : '不限时'})\n请引用回复本消息: [+1/y/支持/同意] 或 [-1/n/反对/拒绝]`
@@ -93,17 +103,18 @@ export function apply(ctx: Context, config: Config) {
     voteMap.set(voteKey, vote)
   })
 
-  ctx.on('message', (session) => {
+  ctx.middleware((session, next) => {
     const { userId, quote, guildId, content } = session
     const targetGroup = config.voteGroup || guildId
-    if (!userId || !quote?.id || !guildId || guildId !== targetGroup) return
+    if (!userId || !quote?.id || !guildId || guildId !== targetGroup) return next()
+    if (config.allowList && config.allowList.length > 0) if (!config.allowList.includes(userId)) return next()
     const voteEntry = [...voteMap.entries()].find(([, v]) => v.messageId === quote.id)
-    if (!voteEntry) return
+    if (!voteEntry) return next()
     const [voteKey, vote] = voteEntry
     const msgText = content?.trim().toLowerCase() || ''
     const isApprove = ['+1', 'y', 'yes', '支持', '同意'].includes(msgText)
     const isReject = ['-1', 'n', 'no', '反对', '拒绝'].includes(msgText)
-    if (!isApprove && !isReject) return
+    if (!isApprove && !isReject) return next()
     if (isApprove) {
       if (vote.approve.has(userId)) return
       vote.reject.delete(userId)
